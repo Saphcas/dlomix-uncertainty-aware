@@ -220,8 +220,8 @@ def set_seed(seed=0):
     # seed to the seed variable of StreamingFragmentIonIntensityDataset() 
     
 # Set the seed
-if CONFIG.seeded_run:
-    set_seed(CONFIG.seed)
+if CONFIG["seeded_run"]:
+    set_seed(CONFIG["seed"])
 
 def _device_from_torch() -> torch.device:
     if torch.cuda.is_available():
