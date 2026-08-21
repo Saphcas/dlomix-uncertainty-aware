@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import math
 import time
+import random
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -191,11 +192,36 @@ CONFIG = {
     # --- PROSIT-PTM architecture notes (paper hyperparameters; informational) ---
     # "ptm_mlp_units": (1024, 64, 16),  # according to (2) PROSIT-PTM (PTM feature MLP sizes)
     # "decoder_dropout_rate": 0.5,  # according to (2) PROSIT-PTM (decoder dropout differs from encoder dropout)
+    # --- Weights and Biases logging ---
     "wandb_run_name": os.environ.get(str("WANDB_NAME")),
+    # --- Weighting parameters ---
     "bce_weight": float(os.environ.get("BCE_WEIGHT", 1)),
     "nll_weight": float(os.environ.get("NLL_WEIGHT", 1)),
+    # --- Seeding ---
+    "seed": int(os.environ.get("SEED", 0)),
+    "seeded_run": _env_bool("SEEDED_RUN", False)
 }
 
+# -----------------------------------------------------------------------------
+# Defining seeds for reproducibility in weighting
+# -----------------------------------------------------------------------------
+def set_seed(seed=0):
+    # Python
+    random.seed(seed)
+    # Numpy
+    np.random.seed(seed)
+    # Pytorch
+    torch.manual_seed(seed)
+    # Making CUDA convolution operations deterministic
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+    # Since we are using another dataloader than DataLoader we only need to give the wanted
+    # seed to the seed variable of StreamingFragmentIonIntensityDataset() 
+    
+# Set the seed
+if CONFIG.seeded_run:
+    set_seed(CONFIG.seed)
 
 def _device_from_torch() -> torch.device:
     if torch.cuda.is_available():
@@ -900,6 +926,8 @@ def main() -> int:
             "dropout_rate": args.dropout_rate,
             "bce_weight": args.bce_weight,
             "nll_weight": args.nll_weight,
+            "seeded_run": args.seeded_run,
+            "seed": args.seed,
         }
     )
 
@@ -961,7 +989,7 @@ def main() -> int:
         batch_size=args.batch_size,
         shuffle=args.shuffle,
         shuffle_buffer_size=args.shuffle_buffer_size,
-        seed=0,
+        seed=args.seed,
         with_termini=args.with_termini,
         encoding_scheme=args.encoding_scheme,
         model_features=model_features,
