@@ -163,7 +163,7 @@ mkdir -p "$APPTAINER_CACHEDIR" "$APPTAINER_TMPDIR" "$DLOMIX_PERSONAL/containers"
 Build the DLOmix image from the shared NVIDIA PyTorch base image:
 
 ```bash
-cd "$DLOMIX_PERSONAL/repos/dlomix"
+cd "$DLOMIX_PERSONAL/repos/dlomix-uncertainty-aware"
 apptainer build "$DLOMIX_PERSONAL/containers/dlomix-ngc-26.06.sif" cluster/arrhenius/apptainer/dlomix.def
 ```
 
