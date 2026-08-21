@@ -63,7 +63,7 @@ trap on_term TERM
 trap 'echo "[signal] caught SIGINT"; exit 130' INT
 
 apptainer exec --bind $TMPDIR/ \
-    /nobackup/proj/disk/kall/personal/$USER/containers/dlomix-ngc-26.06.sif \
+    /nobackup/proj/disk/kall/personal/$USER/containers/unmod-parameter-sweep.sif \
     python /opt/dlomix-src/run_scripts/train_prosit_intensity_ptms_torch.py
 
 
