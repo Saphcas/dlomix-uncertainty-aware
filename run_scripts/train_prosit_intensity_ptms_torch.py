@@ -57,8 +57,11 @@ os.environ.setdefault("HF_DATASETS_CACHE", str(hf_datasets_cache))
 os.environ.setdefault("HF_HUB_CACHE", str(hf_hub_cache))
 
 data_root = Path(os.environ.get("DATA_HOME", str(DATA_ROOT))).expanduser()
-data_location = Path(os.environ.get("DATA_LOCATION", str(data_root / "data"))
-).expanduser()
+data_location = Path(os.environ.get("DATA_LOCATION", str(data_root / "data"))).expanduser()
+
+train_data = Path(os.environ.get("TRAIN_LOCATION", str(data_location / "all_train_ptms_fixed_na.parquet"))).expanduser()
+val_data = Path(os.environ.get("VAL_LOCATION", str(data_location / "all_val_ptms_fixed_na.parquet"))).expanduser()
+test_data = Path(os.environ.get("TEST_LOCATION", str(data_location / "test.parquet"))).expanduser()
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -89,9 +92,9 @@ from dlomix.models import PrositIntensityPredictor, PrositIntensityUncertaintyPr
 CONFIG = {
     # --- Model Settings ---
     # Path within container, remember to define the path names when creating the image
-    "train": f"{str(data_location)}/all_train_ptms_fixed_na.parquet",
-    "val": f"{str(data_location)}/all_val_ptms_fixed_na.parquet",
-    "test": f"{str(data_location)}/test.parquet",
+    "train": str(train_data),
+    "val": str(val_data),
+    "test": str(test_data),
     # Bool for model selection, false will use the current Prosit standard of masked spectral distance
     "uncertainty_aware": _env_bool("UNCERTAINTY_AWARE", True),
     # --- Training loop (evidence: `run_scripts/run_prosit_intensity_torch.py`,
@@ -152,14 +155,20 @@ CONFIG = {
     "profile_dataloader_only_batches": int(os.environ.get("PROFILE_DATALOADER_ONLY_BATCHES", 0)),  # if >0, run loader-only benchmark then exit
     "profile_dataloader_move_to_device": _env_bool("PROFILE_DATALOADER_MOVE_TO_DEVICE", False),
     # --- Optional optimizer / stability knobs (evidence: repo examples) ---
-    "grad_clip_max_norm": 1.0,  # evidence: torch intensity examples clip with max_norm=1
+    "grad_clip_max_norm": float(os.environ.get("GRAD_CLIP_MAX_NORM", 1.0)),  # evidence: torch intensity examples clip with max_norm=1
     # "weight_decay": 0.0,  # evidence: not used in repo examples; keep off unless you add it intentionally
     # --- PROSIT-PTM FII schedule knobs (paper hyperparameters) ---
+    "lr_schedule": os.environ.get("LR_SCHEDULE", "auto").strip().lower(),  # auto | clr | warmup_cosine | constant
     "use_clr": _env_bool("USE_CLR", True),  # according to (2) PROSIT-PTM (FII uses cyclic learning rate)
-    "clr_base_lr": 1e-5,  # according to (2) PROSIT-PTM (lower lr bound)
-    "clr_max_lr": 2e-4,  # according to (2) PROSIT-PTM (upper lr bound)
-    "clr_scale_gamma": 0.95,  # according to (2) PROSIT-PTM (upper bound scaled by 0.95 every 8 epochs)
-    "clr_scale_every_epochs": 8,  # according to (2) PROSIT-PTM
+    "clr_base_lr": float(os.environ.get("CLR_BASE_LR", 1e-5)),  # according to (2) PROSIT-PTM (lower lr bound)
+    "clr_max_lr": float(os.environ.get("CLR_MAX_LR", 2e-4)),  # according to (2) PROSIT-PTM (upper lr bound)
+    "clr_scale_gamma": float(os.environ.get("CLR_SCALE_GAMMA", 0.95)),  # according to (2) PROSIT-PTM (upper bound scaled by 0.95 every 8 epochs)
+    "clr_scale_every_epochs": int(os.environ.get("CLR_SCALE_EVERY_EPOCHS", 8)),  # according to (2) PROSIT-PTM
+    "warmup_cosine_warmup_steps": int(os.environ.get("WARMUP_COSINE_WARMUP_STEPS", os.environ.get("WARMUP_STEPS", 13_690))),
+    "warmup_cosine_start_lr": float(os.environ.get("WARMUP_COSINE_START_LR", 1.6e-5)),
+    "warmup_cosine_peak_lr": float(os.environ.get("WARMUP_COSINE_PEAK_LR", 1.2e-4)),
+    "warmup_cosine_min_lr": float(os.environ.get("WARMUP_COSINE_MIN_LR", 1.6e-5)),
+    "warmup_cosine_total_steps": int(os.environ.get("WARMUP_COSINE_TOTAL_STEPS", 0)),
     # Disabled by default: for the uncertainty-aware objective, validation NLL
     # can move differently from spectral angle/MAE because it also includes
     # variance calibration and presence probabilities. Set >0 to re-enable.
@@ -448,10 +457,63 @@ def _set_optimizer_lr(optimizer: torch.optim.Optimizer, lr: float) -> None:
         group["lr"] = lr
 
 
+def _clip_grad_norm(model: torch.nn.Module, max_norm: float) -> float:
+    total_norm = torch.nn.utils.clip_grad_norm_(
+        model.parameters(), max_norm=max_norm
+    )
+    return float(total_norm.detach().cpu())
+
+
 def _triangular_lr(progress_0_to_1: float, base_lr: float, max_lr: float) -> float:
     progress_0_to_1 = max(0.0, min(1.0, float(progress_0_to_1)))
     triangle = 1.0 - abs(2.0 * progress_0_to_1 - 1.0)  # 0 -> 1 -> 0
     return base_lr + triangle * (max_lr - base_lr)
+
+
+def _resolve_lr_schedule(config_value: str, use_clr: bool) -> str:
+    schedule = str(config_value or "auto").strip().lower().replace("-", "_")
+    if schedule == "auto":
+        return "clr" if use_clr else "constant"
+
+    aliases = {
+        "none": "constant",
+        "off": "constant",
+        "cyclic": "clr",
+        "cyclic_lr": "clr",
+        "triangular": "clr",
+        "cosine": "warmup_cosine",
+        "warmup": "warmup_cosine",
+        "warmup_cosine_decay": "warmup_cosine",
+    }
+    schedule = aliases.get(schedule, schedule)
+    if schedule not in {"constant", "clr", "warmup_cosine"}:
+        raise ValueError(
+            f"Unknown LR_SCHEDULE={config_value!r}; expected auto, clr, warmup_cosine, or constant."
+        )
+    return schedule
+
+
+def _warmup_cosine_lr(
+    step_0_based: int,
+    total_steps: int,
+    warmup_steps: int,
+    start_lr: float,
+    peak_lr: float,
+    min_lr: float,
+) -> float:
+    step = max(0, int(step_0_based))
+    total_steps = max(1, int(total_steps))
+    warmup_steps = max(0, int(warmup_steps))
+
+    if warmup_steps > 0 and step < warmup_steps:
+        warmup_progress = float(step) / float(max(1, warmup_steps))
+        return start_lr + warmup_progress * (peak_lr - start_lr)
+
+    decay_steps = max(1, total_steps - warmup_steps)
+    decay_progress = float(step - warmup_steps) / float(decay_steps)
+    decay_progress = max(0.0, min(1.0, decay_progress))
+    cosine = 0.5 * (1.0 + math.cos(math.pi * decay_progress))
+    return min_lr + cosine * (peak_lr - min_lr)
 
 
 @dataclass(frozen=True)
@@ -763,6 +825,7 @@ def _print_ptm_handling_probe(
 
 def main() -> int:
     args = SimpleNamespace(**CONFIG)
+    lr_schedule = _resolve_lr_schedule(args.lr_schedule, bool(args.use_clr))
 
     device = _device_from_torch()
     print(f"Using device: {device}")
@@ -822,11 +885,17 @@ def main() -> int:
             "profile_dataloader_only_batches": args.profile_dataloader_only_batches,
             "profile_dataloader_move_to_device": args.profile_dataloader_move_to_device,
             "grad_clip_max_norm": args.grad_clip_max_norm,
-            "use_clr": args.use_clr,
+            "lr_schedule": lr_schedule,
+            "use_clr": lr_schedule == "clr",
             "clr_base_lr": args.clr_base_lr,
             "clr_max_lr": args.clr_max_lr,
             "clr_scale_gamma": args.clr_scale_gamma,
             "clr_scale_every_epochs": args.clr_scale_every_epochs,
+            "warmup_cosine_warmup_steps": args.warmup_cosine_warmup_steps,
+            "warmup_cosine_start_lr": args.warmup_cosine_start_lr,
+            "warmup_cosine_peak_lr": args.warmup_cosine_peak_lr,
+            "warmup_cosine_min_lr": args.warmup_cosine_min_lr,
+            "warmup_cosine_total_steps": args.warmup_cosine_total_steps,
             "early_stopping_patience": args.early_stopping_patience,
             "dropout_rate": args.dropout_rate,
             "bce_weight": args.bce_weight,
@@ -972,13 +1041,31 @@ def main() -> int:
         ).to(device)
         model = _maybe_compile_model(model, args)
 
-    clr_enabled = bool(getattr(args, "use_clr", False))
+    clr_enabled = lr_schedule == "clr"
+    warmup_cosine_enabled = lr_schedule == "warmup_cosine"
     clr_base_lr = float(getattr(args, "clr_base_lr", args.lr))
     clr_max_lr = float(getattr(args, "clr_max_lr", args.lr))
     clr_gamma = float(getattr(args, "clr_scale_gamma", 1.0))
     clr_every = int(getattr(args, "clr_scale_every_epochs", 0) or 0)
+    warmup_cosine_warmup_steps = int(
+        getattr(args, "warmup_cosine_warmup_steps", 13_690) or 0
+    )
+    warmup_cosine_start_lr = float(
+        getattr(args, "warmup_cosine_start_lr", 1.6e-5)
+    )
+    warmup_cosine_peak_lr = float(
+        getattr(args, "warmup_cosine_peak_lr", 1.2e-4)
+    )
+    warmup_cosine_min_lr = float(
+        getattr(args, "warmup_cosine_min_lr", warmup_cosine_start_lr)
+    )
 
-    initial_lr = clr_base_lr if clr_enabled else float(args.lr)
+    if warmup_cosine_enabled:
+        initial_lr = warmup_cosine_start_lr
+    elif clr_enabled:
+        initial_lr = clr_base_lr
+    else:
+        initial_lr = float(args.lr)
     optimizer = torch.optim.Adam(params=model.parameters(), lr=initial_lr)
 
     grad_clip = float(getattr(args, "grad_clip_max_norm", 1.0))
@@ -998,6 +1085,31 @@ def main() -> int:
     test_steps_est, test_rows = _estimate_num_steps(
         test_path, args.batch_size, int(getattr(args, "max_test_batches", 0) or 0)
     )
+
+    total_train_steps_for_schedule = None
+    if warmup_cosine_enabled:
+        total_train_steps_for_schedule = int(
+            getattr(args, "warmup_cosine_total_steps", 0) or 0
+        )
+        if total_train_steps_for_schedule <= 0:
+            if train_steps_est is None:
+                raise ValueError(
+                    "LR_SCHEDULE=warmup_cosine requires estimated train steps or "
+                    "WARMUP_COSINE_TOTAL_STEPS."
+                )
+            total_train_steps_for_schedule = max(
+                1, int(train_steps_est) * int(args.epochs)
+            )
+        if total_train_steps_for_schedule <= warmup_cosine_warmup_steps:
+            print(
+                "Warning: warmup steps cover the full scheduled training run "
+                f"(warmup_steps={warmup_cosine_warmup_steps}, "
+                f"total_steps={total_train_steps_for_schedule})."
+            )
+        run.config.update(
+            {"warmup_cosine_resolved_total_steps": total_train_steps_for_schedule},
+            allow_val_change=True,
+        )
 
     if train_steps_est is not None:
         if train_rows is None:
@@ -1081,6 +1193,16 @@ def main() -> int:
                     progress = float(train_batches) / float(denom)
                     lr_now = _triangular_lr(progress, clr_base_lr, clr_max_lr)
                     _set_optimizer_lr(optimizer, lr_now)
+                elif warmup_cosine_enabled:
+                    lr_now = _warmup_cosine_lr(
+                        train_step,
+                        int(total_train_steps_for_schedule or 1),
+                        warmup_cosine_warmup_steps,
+                        warmup_cosine_start_lr,
+                        warmup_cosine_peak_lr,
+                        warmup_cosine_min_lr,
+                    )
+                    _set_optimizer_lr(optimizer, lr_now)
 
                 if do_profile:
                     _maybe_cuda_sync(device, profile_cuda_sync)
@@ -1141,19 +1263,16 @@ def main() -> int:
                 if do_profile:
                     _maybe_cuda_sync(device, profile_cuda_sync)
                     t_bwd_0 = time.perf_counter()
+                grad_norm = None
                 if amp_use_grad_scaler and scaler is not None:
                     scaler.scale(loss).backward()
                     if grad_clip > 0:
                         scaler.unscale_(optimizer)
-                        torch.nn.utils.clip_grad_norm_(
-                            model.parameters(), max_norm=grad_clip
-                        )
+                        grad_norm = _clip_grad_norm(model, grad_clip)
                 else:
                     loss.backward()
                     if grad_clip > 0:
-                        torch.nn.utils.clip_grad_norm_(
-                            model.parameters(), max_norm=grad_clip
-                        )
+                        grad_norm = _clip_grad_norm(model, grad_clip)
                 if do_profile:
                     _maybe_cuda_sync(device, profile_cuda_sync)
                     backward_s = time.perf_counter() - t_bwd_0
@@ -1191,12 +1310,15 @@ def main() -> int:
                 train_metrics = {
                     "train_step": train_step,
                     "train_batch_loss": loss.item(),
+                    "train_batch_learning_rate": optimizer.param_groups[0]["lr"],
                     "train_loss_total": train_loss_total,
                     "current_epoch_average_train_loss": train_loss_total
                     / max(1, train_batches),
                     "train_batch_mean_absolute_error": batch_mae,
                     "train_batch_mean_spectral_angle": batch_msa,
                 }
+                if grad_norm is not None:
+                    train_metrics["train_batch_grad_norm"] = grad_norm
                 train_metrics.update(batch_variance_stats)
                 global_step = _wandb_log(run, global_step, train_metrics)
 
@@ -1387,6 +1509,16 @@ def main() -> int:
                     progress = float(train_batches) / float(denom)
                     lr_now = _triangular_lr(progress, clr_base_lr, clr_max_lr)
                     _set_optimizer_lr(optimizer, lr_now)
+                elif warmup_cosine_enabled:
+                    lr_now = _warmup_cosine_lr(
+                        train_step,
+                        int(total_train_steps_for_schedule or 1),
+                        warmup_cosine_warmup_steps,
+                        warmup_cosine_start_lr,
+                        warmup_cosine_peak_lr,
+                        warmup_cosine_min_lr,
+                    )
+                    _set_optimizer_lr(optimizer, lr_now)
 
                 if do_profile:
                     _maybe_cuda_sync(device, profile_cuda_sync)
@@ -1437,19 +1569,16 @@ def main() -> int:
                 if do_profile:
                     _maybe_cuda_sync(device, profile_cuda_sync)
                     t_bwd_0 = time.perf_counter()
+                grad_norm = None
                 if amp_use_grad_scaler and scaler is not None:
                     scaler.scale(loss).backward()
                     if grad_clip > 0:
                         scaler.unscale_(optimizer)
-                        torch.nn.utils.clip_grad_norm_(
-                            model.parameters(), max_norm=grad_clip
-                        )
+                        grad_norm = _clip_grad_norm(model, grad_clip)
                 else:
                     loss.backward()
                     if grad_clip > 0:
-                        torch.nn.utils.clip_grad_norm_(
-                            model.parameters(), max_norm=grad_clip
-                        )
+                        grad_norm = _clip_grad_norm(model, grad_clip)
                 if do_profile:
                     _maybe_cuda_sync(device, profile_cuda_sync)
                     backward_s = time.perf_counter() - t_bwd_0
@@ -1483,14 +1612,18 @@ def main() -> int:
 
                 train_step += 1
 
-                global_step = _wandb_log(run, global_step, {
+                train_metrics = {
                     "train_step": train_step,
                     "train_batch_loss": loss.item(),
+                    "train_batch_learning_rate": optimizer.param_groups[0]["lr"],
                     "train_loss_total": train_loss_total,
                     "current_epoch_average_train_loss": train_loss_total / max(1, train_batches),
                     "train_batch_mean_absolute_error": batch_mae,
                     "train_batch_mean_spectral_angle": batch_msa,
-                })
+                }
+                if grad_norm is not None:
+                    train_metrics["train_batch_grad_norm"] = grad_norm
+                global_step = _wandb_log(run, global_step, train_metrics)
                 
                 iter_end = time.perf_counter()
                 if do_profile:
