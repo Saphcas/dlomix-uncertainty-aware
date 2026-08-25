@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import math
 import time
+import random
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -191,9 +192,36 @@ CONFIG = {
     # --- PROSIT-PTM architecture notes (paper hyperparameters; informational) ---
     # "ptm_mlp_units": (1024, 64, 16),  # according to (2) PROSIT-PTM (PTM feature MLP sizes)
     # "decoder_dropout_rate": 0.5,  # according to (2) PROSIT-PTM (decoder dropout differs from encoder dropout)
+    # --- Weights and Biases logging ---
     "wandb_run_name": os.environ.get(str("WANDB_NAME")),
+    # --- Weighting parameters ---
+    "bce_weight": float(os.environ.get("BCE_WEIGHT", 1)),
+    "nll_weight": float(os.environ.get("NLL_WEIGHT", 1)),
+    # --- Seeding ---
+    "seed": int(os.environ.get("SEED", 0)),
+    "seeded_run": _env_bool("SEEDED_RUN", False)
 }
 
+# -----------------------------------------------------------------------------
+# Defining seeds for reproducibility in weighting
+# -----------------------------------------------------------------------------
+def set_seed(seed=0):
+    # Python
+    random.seed(seed)
+    # Numpy
+    np.random.seed(seed)
+    # Pytorch
+    torch.manual_seed(seed)
+    # Making CUDA convolution operations deterministic
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+    # Since we are using another dataloader than DataLoader we only need to give the wanted
+    # seed to the seed variable of StreamingFragmentIonIntensityDataset() 
+    
+# Set the seed
+if CONFIG["seeded_run"]:
+    set_seed(CONFIG["seed"])
 
 def _device_from_torch() -> torch.device:
     if torch.cuda.is_available():
@@ -827,6 +855,7 @@ def main() -> int:
 
     device = _device_from_torch()
     print(f"Using device: {device}")
+    print(f"Using weights: BCE = {args.bce_weight}, NLL = {args.nll_weight}")
 
     if args.checkpoint_save:
         os.makedirs(args.checkpoint_save, exist_ok=True)
@@ -895,6 +924,10 @@ def main() -> int:
             "warmup_cosine_total_steps": args.warmup_cosine_total_steps,
             "early_stopping_patience": args.early_stopping_patience,
             "dropout_rate": args.dropout_rate,
+            "bce_weight": args.bce_weight,
+            "nll_weight": args.nll_weight,
+            "seeded_run": args.seeded_run,
+            "seed": args.seed,
         }
     )
 
@@ -956,7 +989,7 @@ def main() -> int:
         batch_size=args.batch_size,
         shuffle=args.shuffle,
         shuffle_buffer_size=args.shuffle_buffer_size,
-        seed=0,
+        seed=args.seed,
         with_termini=args.with_termini,
         encoding_scheme=args.encoding_scheme,
         model_features=model_features,
@@ -1240,7 +1273,7 @@ def main() -> int:
                     if do_profile:
                         _maybe_cuda_sync(device, profile_cuda_sync)
                         t_loss_0 = time.perf_counter()
-                    loss = gaussian_nll(batch[columns.label], pred_log_mean, pred_log_var, pred_presence_logit, batch[columns.sequence])
+                    loss = gaussian_nll(batch[columns.label], pred_log_mean, pred_log_var, pred_presence_logit, batch[columns.sequence], args.bce_weight, args.nll_weight)
                     _raise_for_nonfinite_loss(
                         loss,
                         epoch=epoch,
@@ -1359,7 +1392,7 @@ def main() -> int:
                     batch = _cast_batch_types(batch, columns)
                     with _amp_autocast_context(device, amp_enabled, amp_dtype):
                         pred_log_mean, pred_log_var, pred_presence_logit = model(batch)
-                        val_loss = gaussian_nll(batch[columns.label], pred_log_mean, pred_log_var, pred_presence_logit, batch[columns.sequence])
+                        val_loss = gaussian_nll(batch[columns.label], pred_log_mean, pred_log_var, pred_presence_logit, batch[columns.sequence], args.bce_weight, args.nll_weight)
                     _raise_for_nonfinite_loss(
                         val_loss,
                         epoch=epoch,
@@ -1780,7 +1813,7 @@ def main() -> int:
                     batch = _cast_batch_types(batch, columns)
                     with _amp_autocast_context(device, amp_enabled, amp_dtype):
                         pred_log_mean, pred_log_var, pred_presence_logit = model(batch)
-                        test_loss = gaussian_nll(batch[columns.label], pred_log_mean, pred_log_var, pred_presence_logit, batch[columns.sequence])
+                        test_loss = gaussian_nll(batch[columns.label], pred_log_mean, pred_log_var, pred_presence_logit, batch[columns.sequence], args.bce_weight, args.nll_weight)
                     test_loss_total += test_loss.item()
                     test_batches += 1
                     test_it.set_postfix(loss=f"{test_loss.item():.4f}")

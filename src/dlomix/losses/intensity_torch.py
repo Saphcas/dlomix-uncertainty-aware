@@ -212,6 +212,8 @@ def gaussian_nll(
     y_log_var_pred: torch.Tensor,
     y_presence_pred: torch.Tensor,
     encoded_sequence: torch.Tensor,
+    bce_weight: float,
+    nll_weight: float,
     fragments_per_cleavage=None,
     has_termini: bool = True,
 ) -> torch.Tensor:
@@ -245,6 +247,10 @@ def gaussian_nll(
     encoded_sequence : torch.Tensor
         Tensor containing the number encoded sequence. Shape is equal to
         `(batch_size, max_seq_len)`.
+    bce_weight : float
+        The weight for the BCE loss
+    nll_weight : float
+        The weight for the Gaussian NLL loss
     fragments_per_cleavage : int, optional
         Number of fragment-ion channels predicted per peptide cleavage. Inferred
         from tensor shape when omitted.
@@ -334,6 +340,6 @@ def gaussian_nll(
         # batch still trains through the Bernoulli absence terms above.
         intensity_loss = y_log_mean_pred.sum() * 0.0
 
-    total_loss = presence_loss + intensity_loss
+    total_loss = (bce_weight * presence_loss) + (nll_weight * intensity_loss)
     normalizer = valid.sum().to(dtype=total_loss.dtype)
     return total_loss / normalizer
