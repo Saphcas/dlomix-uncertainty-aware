@@ -11,9 +11,7 @@
 
 #SBATCH -o /nobackup/proj/disk/kall/personal/%u/logs/%x-%A_%a.out
 
-
 set -Eeuo pipefail
-
 
 # ----- Parameter sweep configurations -----
 
@@ -39,11 +37,9 @@ NLL_INDEX=$((SLURM_ARRAY_TASK_ID % NUM_NLL))
 export BCE_WEIGHT="${BCE_WEIGHTS[$BCE_INDEX]}"
 export NLL_WEIGHT="${NLL_WEIGHTS[$NLL_INDEX]}"
 
-
 # ----- Dataset -----
 
 scp -r /nobackup/proj/disk/kall/shared/datasets/Prosit_unmod/intensity $TMPDIR
-
 
 # ----- HuggingFace variables -----
 
@@ -51,7 +47,6 @@ export HF_HOME="$TMPDIR/.hf"
 export HF_HUB_CACHE="$TMPDIR/.hf/hub"
 export HF_DATASETS_CACHE="$TMPDIR/.hf/datasets"
 export TRANSFORMERS_CACHE="$TMPDIR/.hf/transformers"
-
 
 # ----- Training configuration -----
 
@@ -65,13 +60,11 @@ export UNCERTAINTY_AWARE=True
 export SEEDED_RUN=True
 export SEED=15
 
-
 # ----- File locations -----
 
 export TRAIN_LOCATION="$TMPDIR/intensity/unmod_train.parquet"
 export VAL_LOCATION="$TMPDIR/intensity/unmod_val.parquet"
 export TEST_LOCATION="$TMPDIR/intensity/unmod_test.parquet"
-
 
 # ----- Output variables -----
 
@@ -82,8 +75,7 @@ export WANDB_NAME="${SLURM_JOB_NAME}_${SLURM_JOB_ID}_BCE${BCE_WEIGHT}_NLL${NLL_W
 PERSISTENT_DIR="/nobackup/proj/disk/kall/personal/${USER}/checkpoints/unmod_weighting"
 
 mkdir -p "$CHECKPOINT_DIR"
-mkdir -p "$PERSISTENT_DIR"
-
+#mkdir -p "$PERSISTENT_DIR"
 
 # ----- Checkpoint persistence -----
 
@@ -126,7 +118,6 @@ on_int()
 trap cleanup EXIT
 trap on_term TERM
 trap on_int INT
-
 
 # ----- Training -----
 
