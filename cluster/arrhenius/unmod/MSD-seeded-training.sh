@@ -99,7 +99,7 @@ trap on_int INT
 # ----- Training -----
 
 apptainer exec --bind "$TMPDIR/" \
-    "/nobackup/proj/disk/kall/personal/${USER}/containers/dlomix-ngc-26.06.sif" \
+    "/nobackup/proj/disk/kall/personal/${USER}/containers/dlomix-seeded.sif" \
     python /opt/dlomix-src/run_scripts/train_prosit_intensity_ptms_torch.py
 
 # ----- In case sync_back fails -----
