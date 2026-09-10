@@ -1,8 +1,12 @@
 #!/bin/bash
-#SBATCH -A naiss2026-3-479-gpu -p gpu --gpus=1
+#SBATCH -A naiss2026-3-479-gpu 
+#SBATCH -p gpu 
+#SBATCH --gpus=1
 #SBATCH -t 42:00:00
 #SBATCH --signal=B:TERM@120
+
 #SBATCH -J dlomix-ptm-ua-clr-train
+
 #SBATCH -o /nobackup/proj/disk/kall/personal/%u/logs/%x-%j.out
 
 set -Eeuo pipefail

@@ -1,5 +1,4 @@
 #!/bin/bash
-
 #SBATCH -A naiss2026-3-479-gpu
 #SBATCH -p gpu
 #SBATCH --gpus=1
