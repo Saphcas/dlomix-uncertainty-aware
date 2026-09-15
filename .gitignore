@@ -2,8 +2,8 @@
 .vscode/
 
 # Ignore local files
-storage/
-nn_learning/
+notebooks/uncertainty_aware_plotting_examples/MSD_checkpoint_epoch_120.pth
+notebooks/uncertainty_aware_plotting_examples/UA_checkpoint_epoch_120.pth
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
